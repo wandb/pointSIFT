@@ -25,11 +25,8 @@ In our experiment, All the codes are tested in Python3.5(If you use Python 2.7, 
     print(tf.sysconfig.get_lib())
 ```
 Then, change the path in all the complie file, like `tf_utils/tf_ops/sampling/tf_sampling_compile.sh`
-Finally, compile the source file, we use tf_sampling as example.
-``` bash
-    cd tf_utils/tf_ops/sampling
-    chmod +x tf_sampling_compile.sh
-    ./tf_sampling_compile.sh
+
+``
 ```
 
 ### Usage
