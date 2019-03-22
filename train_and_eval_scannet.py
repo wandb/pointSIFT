@@ -2,11 +2,13 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import sys
 import numpy as np
 import time
 import tensorflow as tf
 import argparse
 import scannet_dataset
+import wandb
 
 import tf_utils.provider as provider
 import models.pointSIFT_pointnet as SEG_MODEL
@@ -20,6 +22,7 @@ parser.add_argument('--data_path', default='data', help='scannet dataset path')
 parser.add_argument('--train_log_path', default='log/pointSIFT_train')
 parser.add_argument('--test_log_path', default='log/pointSIFT_test')
 parser.add_argument('--gpu_num', type=int, default=1, help='number of GPU to train')
+parser.add_argument('--eval_rate', type=int, default=5, help='how many epochs should pass before test eval')
 
 # basic params..
 
@@ -45,6 +48,8 @@ BN_INIT_DECAY = 0.5
 BN_DECAY_DECAY_RATE = 0.5
 BN_DECAY_DECAY_STEP = float(DECAY_STEP)
 BN_DECAY_CLIP = 0.99
+
+wandb.init(config=FLAGS, tensorboard=True)
 
 class SegTrainer(object):
     def __init__(self):
@@ -246,15 +251,19 @@ class SegTrainer(object):
                                                                      self.is_train_pl: True})
                         ave_loss += loss
                         train_writer.add_summary(summary, step)
+                        wandb.log({"step": step, "ave_loss": ave_loss, "loss": loss})
                     ave_loss /= iter_in_epoch
                     print("epoch %d , loss is %f take %.3f s" % (epoch + 1, ave_loss, time.time() - tic))
                     tic = time.time()
-                    if (epoch + 1) % 5 == 0:
+                    if (epoch + 1) % FLAGS.eval_rate == 0:
                         acc = self.evaluate_one_epoch(sess, evaluate_writer, step, epoch)
+                        wandb.log({"acc": acc})
                         if acc > best_acc:
                             _path = saver.save(sess, os.path.join(SAVE_PATH, "best_seg_model_%d.ckpt" % (epoch + 1)))
                             print("epoch %d, best saved in file: " % (epoch + 1), _path)
                             best_acc = acc
+                            wandb.log({"best_acc": best_acc})
+
                 _path = saver.save(sess, os.path.join(SAVE_PATH, 'train_base_seg_model.ckpt'))
                 print("Model saved in file: ", _path)
 
@@ -321,10 +330,18 @@ class SegTrainer(object):
                     total_seen_class[l] += np.sum((batch_label == l) & (batch_smpw > 0))
                     total_correct_class[l] += np.sum((pred_val == l) & (batch_label == l) & (batch_smpw > 0))
                 for b in range(batch_label.shape[0]):
-                    uvlabel = provider.point_cloud_label_to_surface_voxel_label(aug_data[b, batch_smpw[b, :] > 0, :],
-                                                                                np.concatenate((np.expand_dims(batch_label[b, batch_smpw[b, :] > 0], 1),
-                                                                                                np.expand_dims(pred_val[b, batch_smpw[b, :] > 0], 1)), axis=1),
-                                                                                res=0.02)
+                    pred = pred_val[b, batch_smpw[b, :] > 0]
+                    label = batch_label[b, batch_smpw[b, :] > 0]
+                    print("Should print tensors belo")
+                    print("Tensor Shape:", tf.shape(pred))
+                    tf.print(pred, output_stream=sys.stderr)
+                    tf.print(label, output_stream=sys.stderr)
+                    print("Should print tensors above")
+                    uvlabel = provider.point_cloud_label_to_surface_voxel_label(
+				    aug_data[b, batch_smpw[b, :] > 0, :],
+				    np.concatenate((np.expand_dims(label, 1),
+						    np.expand_dims(pred, 1)), axis=1),
+				    res=0.02)
                     total_correct_vox += np.sum((uvlabel[:, 0] == uvlabel[:, 1]) & (uvlabel[:, 0] > 0))
                     total_seen_vox += np.sum(uvlabel[:, 0] > 0)
                     tmp, _ = np.histogram(uvlabel[:, 0], range(22))
@@ -349,6 +366,13 @@ class SegTrainer(object):
             np.array(total_correct_class_vox[1:]) / (np.array(total_seen_class_vox[1:], dtype=np.float) + 1e-6),
             weights=caliweights)
         print('eval whole scene point calibrated average acc vox: %f' % caliacc)
+        wandb.log(
+           {"meanLoss": (loss_sum / float(self.test_sz)),
+            "pointAccuracyVox": (total_correct_vox / float(total_seen_vox)),
+            "avgClassAccVox": (np.mean(np.array(total_correct_class_vox[1:]) / (np.array(total_seen_class_vox[1:], dtype=np.float) + 1e-6))),
+             "scenePointAccuracy": (total_correct / float(total_seen)),
+             "pointAvgClassAcc": (np.mean(np.array(total_correct_class[1:]) / (np.array(total_seen_class[1:], dtype=np.float) + 1e-6))),
+             "caliacc": caliacc})
 
         per_class_str = 'vox based --------'
         for l in range(1, NUM_CLASS):
